@@ -341,7 +341,9 @@ def analyze_file_role():
 
             if file_content and GEMINI_API_KEY:
                 try:
-                    model = genai.GenerativeModel('gemini-pro')
+                    # Retrieve model name from env, with a default
+                    model_name_from_env = os.getenv("GEMINI_MODEL_NAME", "gemini-pro")
+                    model = genai.GenerativeModel(model_name_from_env)
                     prompt = (
                         f"以下のファイル内容を分析し、このファイルがプロジェクト全体の中でどのような機能的役割を果たしているかを簡潔に説明してください。\n\n"
                         f"ファイルパス: {file_path}\n\n"
