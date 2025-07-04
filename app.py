@@ -4,93 +4,17 @@ import re # For regex matching of file patterns
 
 app = Flask(__name__)
 
-# Define heuristics for identifying unnecessary files - Japanese Reasons
-# List of (regex_pattern, reason_string_jp, is_dir_pattern)
-UNNECESSARY_FILE_PATTERNS = [
-    (r"\.log$", "ログファイル", False),
-    (r"\.tmp$", "一時ファイル", False),
-    (r"\.temp$", "一時ファイル", False),
-    (r"\.bak$", "バックアップファイル", False),
-    (r"\.swp$", "スワップファイル", False),
-    (r"\.swo$", "スワップファイル", False),
-    (r"~$", "バックアップファイル (チルダ)", False),
-    (r"\.DS_Store$", "macOS固有のメタデータファイル", False),
-    (r"Thumbs\.db$", "Windows固有のメタデータファイル", False),
-    (r"\.cache$", "キャッシュファイル", False),
-    (r"\.coverage$", "コードカバレッジデータ", False),
+import os # For API Key
+import google.generativeai as genai # For Gemini API
+# Placeholder for Gemini API Key - User should set this as an environment variable
+# For example: os.environ['GEMINI_API_KEY'] = "YOUR_API_KEY"
+# It's recommended to load this from environment variables for security.
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-    # Compiled files
-    (r"\.o$", "コンパイル済みオブジェクトファイル", False),
-    (r"\.obj$", "コンパイル済みオブジェクトファイル", False),
-    (r"\.class$", "Javaコンパイル済みクラスファイル", False),
-    (r"\.pyc$", "Pythonコンパイル済みバイトコードファイル", False),
-    (r"\.dll$", "ダイナミックリンクライブラリ (ビルド出力)", False),
-    (r"\.so$", "共有オブジェクトファイル (ビルド出力)", False),
-    (r"\.exe$", "実行可能ファイル (ビルド出力)", False),
-    (r"\.out$", "出力ファイル (ビルド/コンパイラ出力)", False),
-    (r"\.app$", "macOSアプリケーションバンドル (ビルド出力)", True),
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
-    # Build directories / Package manager directories
-    (r"(^|/)build/", "ビルド出力ディレクトリ", True),
-    (r"(^|/)dist/", "配布用ディレクトリ", True),
-    (r"(^|/)target/", "ビルドターゲットディレクトリ (例: Java/Rust)", True),
-    (r"(^|/)bin/", "バイナリ出力ディレクトリ (ヒューリスティック)", True),
-    (r"(^|/)obj/", "オブジェクトファイルディレクトリ (ヒューリスティック)", True),
-    (r"(^|/)node_modules/", "Node.js 依存関係ディレクトリ", True),
-    (r"(^|/)\.yarn/", "Yarn PnP ディレクトリ/キャッシュ", True),
-    (r"(^|/)__pycache__/", "Python バイトコードキャッシュディレクトリ", True),
-    (r"(^|/)\.idea/", "JetBrains IDE プロジェクトファイル", True),
-    (r"(^|/)\.vscode/", "VS Code エディタプロジェクトファイル", True),
-    (r"\.project$", "Eclipse プロジェクトファイル", False),
-    (r"\.classpath$", "Eclipse クラスパスファイル", False),
-    (r"(^|/)\.settings/", "Eclipse 設定ディレクトリ", True),
-    (r"(^|/)venv/", "Python 仮想環境ディレクトリ", True),
-    (r"(^|/)env/", "Python 仮想環境ディレクトリ", True),
-    (r"\.env$", "環境設定ファイル (ローカル用)", False),
-    (r"(^|/)\.venv/", "Python 仮想環境ディレクトリ", True),
-    (r"(^|/)(.*\.egg-info)/", "Python egg情報ディレクトリ", True),
-
-    # Archives
-    (r"\.zip$", "ZIPアーカイブ (ビルド成果物か確認)", False),
-    (r"\.tar\.gz$", "TGZアーカイブ (ビルド成果物か確認)", False),
-    (r"\.tgz$", "TGZアーカイブ (ビルド成果物か確認)", False),
-    (r"\.jar$", "Javaアーカイブ (ビルド成果物/依存関係か確認)", False),
-    (r"\.war$", "Java Webアーカイブ (ビルド成果物か確認)", False),
-
-    # IDE specific / OS specific
-    (r"desktop\.ini$", "Windowsデスクトップ設定ファイル", False),
-    (r"(^|/)\.Trash/", "ゴミ箱ディレクトリ", True),
-    (r"(^|/)\.Spotlight-V100/", "macOS Spotlightインデックス", True),
-    (r"(^|/)\.fseventsd/", "macOSファイルシステムイベントログ", True),
-]
-
-def suggest_files_to_ignore(filename_with_path, file_infos):
-    """
-    Analyzes a file path and suggests if it should be ignored.
-    Returns (is_suggested_to_ignore, suggestion_reason)
-    file_infos can be used if we need to know if a path is a directory (not directly available from commit files list)
-    For now, we rely on patterns that include directory markers like trailing slashes or specific names.
-    """
-    for pattern_str, reason, is_dir_pattern in UNNECESSARY_FILE_PATTERNS:
-        # For directory patterns, we want to match if the path contains that directory component.
-        # Example: pattern_str "node_modules/" should match "path/to/node_modules/file.js"
-        # Example: pattern_str ".yarn/" should match ".yarn/cache/file.zip" or "project/.yarn/patch.js"
-        # We compile the pattern string to a regex object for matching.
-        try:
-            # Ensure directory patterns correctly match directory structures.
-            # A common way is to check if the path contains `(^|/)pattern_as_dir_name($|/)`.
-            # The patterns in UNNECESSARY_FILE_PATTERNS are already designed with this in mind (e.g. r"(^|/)node_modules/")
-            regex = re.compile(pattern_str)
-        except re.error as e:
-            # Handle invalid regex patterns if any, though they should be pre-validated
-            print(f"Warning: Invalid regex pattern '{pattern_str}': {e}")
-            continue
-
-        if regex.search(filename_with_path):
-            return True, reason
-
-    return False, ""
-
+# We will remove UNNECESSARY_FILE_PATTERNS and suggest_files_to_ignore
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
@@ -306,38 +230,28 @@ def select_commit():
         response.raise_for_status()
         commit_data = response.json()
 
-        current_file_list_for_suggestion = []
+        # Removed suggestion logic. Now simply list files.
         if 'files' in commit_data:
-             for file_info in commit_data['files']:
-                current_file_list_for_suggestion.append(file_info['filename'])
-
-        for file_info in commit_data.get('files', []):
-            is_suggested, reason = suggest_files_to_ignore(file_info['filename'], current_file_list_for_suggestion)
-            files.append({
-                'filename': file_info['filename'],
-                'status': file_info['status'],
-                'is_suggested_to_ignore': is_suggested,
-                'suggestion_reason': reason
-            })
-
-        if not files and 'commit' in commit_data and 'tree' in commit_data['commit']:
+            for file_info in commit_data['files']:
+                files.append({
+                    'filename': file_info['filename'],
+                    'status': file_info['status']
+                })
+        # Fallback for commits without explicit 'files' list (e.g., initial commit, merge commits sometimes)
+        # This part tries to list all files from the commit's tree if the detailed 'files' array isn't present.
+        elif 'commit' in commit_data and 'tree' in commit_data['commit'] and not files :
             tree_sha = commit_data['commit']['tree']['sha']
             tree_api_url = f"https://api.github.com/repos/{user}/{repo}/git/trees/{tree_sha}?recursive=1"
             tree_response = requests.get(tree_api_url, headers=headers)
             tree_response.raise_for_status()
             tree_data = tree_response.json()
 
-            current_tree_paths = [item['path'] for item in tree_data.get('tree', []) if item['type'] == 'blob']
-
             if 'tree' in tree_data:
                 for item in tree_data['tree']:
-                    if item['type'] == 'blob':
-                        is_suggested, reason = suggest_files_to_ignore(item['path'], current_tree_paths)
+                    if item['type'] == 'blob': # Only include files, not directories
                         files.append({
                             'filename': item['path'],
-                            'status': '不明',
-                            'is_suggested_to_ignore': is_suggested,
-                            'suggestion_reason': reason
+                            'status': '不明', # Status is not available from tree view like this
                         })
     except ValueError as ve:
         error = str(ve)
@@ -363,204 +277,103 @@ def select_commit():
                            branch_name=branch_name,
                            pat=pat)
 
-@app.route('/process_files', methods=['POST'])
-def process_files():
-    repo_url = request.form.get('repo_url')
-    commit_sha = request.form.get('commit_sha')
-    branch_name = request.form.get('branch_name')
-    pat = request.form.get('pat')
-    selected_files = request.form.getlist('selected_files')
+# The /process_files route and its associated logic for .gitignore and git filter-repo are removed.
+# A new route /analyze_file_role will be added next.
 
-    if not repo_url or not commit_sha:
-        return "エラー: リポジトリURLまたはコミットSHAがありません。", 400
+import base64 # For decoding file content from GitHub API
 
-    commit_files_for_template = []
-    if not selected_files:
-        try:
-            parts = repo_url.strip('/').split('/')
-            user, repo = parts[-2], parts[-1]
-            api_url = f"https://api.github.com/repos/{user}/{repo}/commits/{commit_sha}"
-            headers = {'Accept': 'application/vnd.github.v3+json'}
-            if pat:
-                headers['Authorization'] = f'token {pat}'
-            response = requests.get(api_url, headers=headers)
-            response.raise_for_status()
-            commit_data = response.json()
+@app.route('/analyze_file_role', methods=['GET']) # Using GET for simplicity, could be POST
+def analyze_file_role():
+    repo_url = request.args.get('repo_url')
+    commit_sha = request.args.get('commit_sha') # Or use branch_name if analyzing latest
+    file_path = request.args.get('file_path')
+    pat = request.args.get('pat')
+    branch_name = request.args.get('branch_name') # Keep for context
 
-            current_file_list_for_suggestion = []
-            if 'files' in commit_data:
-                 for file_info in commit_data['files']:
-                    current_file_list_for_suggestion.append(file_info['filename'])
+    error = None
+    analysis_result = "分析はまだ実行されていません。" # Default message in Japanese
+    file_content = None
 
-            for file_info in commit_data.get('files', []):
-                is_suggested, reason = suggest_files_to_ignore(file_info['filename'], current_file_list_for_suggestion)
-                commit_files_for_template.append({
-                    'filename': file_info['filename'],
-                    'status': file_info['status'],
-                    'is_suggested_to_ignore': is_suggested,
-                    'suggestion_reason': reason
-                    })
-
-            if not commit_files_for_template and 'commit' in commit_data and 'tree' in commit_data['commit']:
-                tree_sha = commit_data['commit']['tree']['sha']
-                tree_api_url = f"https://api.github.com/repos/{user}/{repo}/git/trees/{tree_sha}?recursive=1"
-                tree_response = requests.get(tree_api_url, headers=headers)
-                tree_response.raise_for_status()
-                tree_data = tree_response.json()
-                current_tree_paths = [item['path'] for item in tree_data.get('tree', []) if item['type'] == 'blob']
-                if 'tree' in tree_data:
-                    for item in tree_data['tree']:
-                        if item['type'] == 'blob':
-                            is_suggested, reason = suggest_files_to_ignore(item['path'], current_tree_paths)
-                            commit_files_for_template.append({
-                                'filename': item['path'],
-                                'status': '不明',
-                                'is_suggested_to_ignore': is_suggested,
-                                'suggestion_reason': reason
-                                })
-        except Exception as e:
-            pass
-
-        error_message = "ファイルが選択されていません。少なくとも1つのファイルを選択してください。"
-        return render_template('commit_files.html',
+    if not all([repo_url, commit_sha, file_path]):
+        error = "リポジトリURL、コミットSHA、ファイルパスが必要です。"
+        # Redirect or render with error:
+        return render_template('commit_files.html', # Or a dedicated error page or back to index
+                               error=error,
                                repo_url=repo_url,
                                commit_sha=commit_sha,
-                               files=commit_files_for_template,
-                               error=error_message,
                                branch_name=branch_name,
-                               pat=pat)
+                               pat=pat,
+                               files=[]) # May need to repopulate files if redirecting to commit_files
 
-    # Refined .gitignore entries generation
-    from collections import defaultdict
-    final_rules = set()
-    rule_examples = defaultdict(list)
+    try:
+        parts = repo_url.strip('/').split('/')
+        user, repo = parts[-2], parts[-1]
+        # Construct URL to get file content at a specific commit
+        # Using ref=commit_sha ensures we get the version from that commit
+        api_url = f"https://api.github.com/repos/{user}/{repo}/contents/{file_path}?ref={commit_sha}"
 
-    # Define these directly for clarity in this logic block
-    # These are the .gitignore rules we'd prefer for certain directories
-    # (regex_to_match_filepath, actual_gitignore_rule_for_dir)
-    CONSOLIDATED_DIR_RULES_MAP = {
-        r"(^|/)node_modules/": "node_modules/",
-        r"(^|/)\.yarn/": ".yarn/",
-        r"(^|/)build/": "build/",
-        r"(^|/)dist/": "dist/",
-        r"(^|/)target/": "target/",
-        r"(^|/)__pycache__/": "__pycache__/",
-        r"(^|/)\.idea/": ".idea/",
-        r"(^|/)\.vscode/": ".vscode/", # Note: .vscode/launch.json is often committed, but settings.json might be ignored.
-                                     # For now, if anything in .vscode is selected, suggest ignoring the whole dir.
-        r"(^|/)\.settings/": ".settings/",
-        r"(^|/)venv/": "venv/",
-        r"(^|/)env/": "env/",
-        r"(^|/)\.venv/": ".venv/",
-        r"(^|/)(.*\.egg-info)/": "*.egg-info/", # More general rule for .egg-info
-    }
+        headers = {'Accept': 'application/vnd.github.v3+json'}
+        if pat:
+            headers['Authorization'] = f'token {pat}'
 
-    # Define common wildcardable extensions
-    COMMON_WILDCARD_EXTENSIONS = {".log", ".tmp", ".temp", ".bak", ".o", ".obj", ".class", ".pyc", ".swp", ".swo", ".cache", ".coverage"}
+        response = requests.get(api_url, headers=headers)
+        response.raise_for_status()
+        file_data = response.json()
+
+        if file_data.get('type') != 'file':
+            error = f"指定されたパス '{file_path}' はファイルではありません。"
+        elif 'content' not in file_data:
+            error = f"ファイル '{file_path}' のコンテンツを取得できませんでした。エンコーディングに問題があるか、空のファイルの可能性があります。"
+        else:
+            file_content_encoded = file_data['content']
+            file_content_bytes = base64.b64decode(file_content_encoded)
+            try:
+                file_content = file_content_bytes.decode('utf-8')
+            except UnicodeDecodeError:
+                # Attempt fallback or inform user about non-UTF-8 content
+                file_content = file_content_bytes.decode('latin-1', errors='replace')
+                analysis_result = "ファイルはUTF-8でデコードできませんでした。コンテンツは代替エンコーディングで表示されています。AI分析の品質に影響する可能性があります。"
 
 
-    if selected_files:
-        for file_path in selected_files:
-            original_file_path_for_example = file_path # Keep original for comments
-            processed_for_this_file = False
+            if file_content and GEMINI_API_KEY:
+                try:
+                    model = genai.GenerativeModel('gemini-pro')
+                    prompt = (
+                        f"以下のファイル内容を分析し、このファイルがプロジェクト全体の中でどのような機能的役割を果たしているかを簡潔に説明してください。\n\n"
+                        f"ファイルパス: {file_path}\n\n"
+                        f"ファイル内容:\n"
+                        f"```\n{file_content[:10000]}\n```\n\n" # Limit content length for API
+                        f"このファイルの主な目的と、プロジェクトの他の部分とどのように連携する可能性があるかについて、1～3文でまとめてください。"
+                    )
+                    ai_response = model.generate_content(prompt)
+                    analysis_result = ai_response.text
+                except Exception as e:
+                    error = f"AI分析中にエラーが発生しました: {e}"
+                    analysis_result = "AI分析の実行中にエラーが発生しました。"
+            elif not GEMINI_API_KEY:
+                analysis_result = "GEMINI_API_KEYが設定されていないため、AI分析は実行できませんでした。ファイルの内容は取得されました。"
+                # If no API key, we can still show the file content for manual review if desired
+                # Or simply state analysis cannot be performed.
 
-            # 1. Check against General Directory Rules
-            for dir_regex, dir_rule in CONSOLIDATED_DIR_RULES_MAP.items():
-                if re.search(dir_regex, file_path):
-                    final_rules.add(dir_rule)
-                    rule_examples[dir_rule].append(original_file_path_for_example)
-                    processed_for_this_file = True
-                    break
-            if processed_for_this_file:
-                continue
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 404:
+            error = f"ファイル '{file_path}' がコミット '{commit_sha}' に見つかりません。"
+        else:
+            error = f"GitHub APIエラー ({e.response.status_code}): {e}"
+    except requests.exceptions.RequestException as e:
+        error = f"ネットワークエラー: {e}"
+    except Exception as e:
+        error = f"予期せぬエラーが発生しました: {e}"
 
-            # 2. Check for Common Wildcardable Extensions
-            file_extension = None
-            if '.' in file_path:
-                potential_ext = "." + file_path.split('.')[-1]
-                # Check against double extensions like .tar.gz
-                for double_ext_candidate in [".tar.gz", ".tar.bz2", ".tar.xz"]: # Add more if needed
-                    if file_path.endswith(double_ext_candidate):
-                        potential_ext = double_ext_candidate
-                        break
-
-                if potential_ext in COMMON_WILDCARD_EXTENSIONS:
-                    file_extension = potential_ext # e.g. ".log", ".bak"
-
-            if file_extension:
-                wildcard_rule = f"*{file_extension}" # e.g. "*.log"
-                final_rules.add(wildcard_rule)
-                rule_examples[wildcard_rule].append(original_file_path_for_example)
-                processed_for_this_file = True
-                continue
-
-            # 3. If not covered by above, add the specific file path
-            if not processed_for_this_file:
-                final_rules.add(original_file_path_for_example)
-                # No examples needed if the rule is the file itself.
-
-    # Construct gitignore_entries list for the template
-    gitignore_entries = []
-    sorted_final_rules = sorted(list(final_rules))
-
-    for rule in sorted_final_rules:
-        gitignore_entries.append(rule)
-        if rule in rule_examples:
-            for example_file in sorted(list(set(rule_examples[rule]))): # Sort examples and ensure unique
-                # Only add example if it's different from the rule itself (for specific file rules)
-                # and if the rule isn't a direct match for the example (e.g. rule is file path itself)
-                if example_file != rule :
-                    gitignore_entries.append(f"# {example_file} (covered by {rule})")
-
-    cleanup_command = ""
-    if selected_files:
-        filter_repo_paths_options = " ".join([f"--path \"{file}\"" for file in selected_files])
-        repo_name_for_clone = repo_url.split('/')[-1]
-        if repo_name_for_clone.endswith('.git'):
-            repo_name_for_clone = repo_name_for_clone[:-4]
-
-        cleanup_command = (
-            f"# 1. Clone a fresh mirror of your repository:\n"
-            f"git clone --mirror {repo_url} {repo_name_for_clone}.git-mirror\n\n"
-            f"# 2. Navigate into the mirrored repository:\n"
-            f"cd {repo_name_for_clone}.git-mirror\n\n"
-            f"# 3. Set up the 'origin' remote to point to your original repository URL:\n"
-            f"#    (Mirrored clones often don't have 'origin' set up by default for pushing)\n"
-            f"git remote add origin {repo_url}\n"
-            f"#    You can verify with: git remote -v\n\n"
-            f"# 4. Ensure you have git-filter-repo installed (e.g., pip install git-filter-repo).\n\n"
-            f"# 5. Run git filter-repo to remove the selected files from the history of branch '{branch_name}':\n"
-            f"#    (This command removes the files. Use with extreme caution!)\n"
-            f"git filter-repo --refs {branch_name} --invert-paths {filter_repo_paths_options}\n\n"
-            f"# 6. Inspect your repository and branch '{branch_name}' to ensure the changes are correct.\n"
-            f"#    For example, check commit history and file contents for this branch.\n\n"
-            f"# 7. Temporarily disable mirror setting for the 'origin' remote to push a specific branch:\n"
-            f"#    (This allows you to push only the cleaned branch instead of all refs from a mirror)\n"
-            f"git config remote.origin.mirror false\n\n"
-            f"# 8. If satisfied, force push the changes for branch '{branch_name}' to your 'origin' remote:\n"
-            f"#    WARNING: This overwrites history on the remote for branch '{branch_name}'.\n"
-            f"#    Ensure all collaborators using this branch are aware.\n"
-            f"git push origin --force {branch_name}\n\n"
-            f"# (Optional) 9. If you want to restore the mirror behavior for future pulls/fetches from 'origin':\n"
-            f"#    git config remote.origin.mirror true\n\n"
-            f"# IMPORTANT NOTES:\n"
-            f"# - ALWAYS BACKUP YOUR ORIGINAL REPOSITORY BEFORE PERFORMING THESE ACTIONS.\n"
-            f"# - This command targets ONLY the branch '{branch_name}'. The files will remain in the history of other branches.\n"
-            f"# - If other branches were created from '{branch_name}' *before* this cleaning, they will still contain the files.\n"
-            f"# - Merging this cleaned branch into other un-cleaned branches later might reintroduce the files or cause conflicts.\n"
-            f"# - To remove files from ALL history, remove `--refs {branch_name}` from the filter-repo command \n"
-            f"#   and use `git push origin --force --all` and `git push origin --force --tags` (after careful review)."
-        )
-
-    return render_template('results.html',
+    return render_template('analysis_result.html',
                            repo_url=repo_url,
                            commit_sha=commit_sha,
-                           selected_files=selected_files,
-                           gitignore_entries=gitignore_entries,
-                           cleanup_command=cleanup_command,
+                           file_path=file_path,
+                           analysis_result=analysis_result,
+                           file_content=file_content, # Pass content for display
+                           error=error,
                            branch_name=branch_name,
                            pat=pat)
-
 
 if __name__ == '__main__':
     app.run(debug=True)

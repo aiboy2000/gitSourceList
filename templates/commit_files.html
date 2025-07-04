@@ -47,33 +47,20 @@
 
         {% if files %}
         <div class="results-section">
-            <h2>.gitignoreルールとクリーンアップコマンドを生成するファイルを選択:</h2>
-            <form method="POST" action="{{ url_for('process_files') }}">
-                <input type="hidden" name="repo_url" value="{{ repo_url }}">
-                <input type="hidden" name="commit_sha" value="{{ commit_sha }}">
-                <input type="hidden" name="branch_name" value="{{ branch_name }}">
-                <input type="hidden" name="pat" value="{{ pat }}"> {# Pass PAT #}
-                <ul>
-                    {% for file in files %}
-                    <li>
-                        <div class="file-info">
-                            <input type="checkbox" name="selected_files" value="{{ file.filename }}" id="file_{{ loop.index }}" {% if file.is_suggested_to_ignore %}checked{% endif %}>
-                            <label for="file_{{ loop.index }}">{{ file.filename }}</label>
-                            {% if file.is_suggested_to_ignore and file.suggestion_reason %}
-                                <small class="suggestion-reason" title="{{ file.suggestion_reason }}"> (提案: {{ file.suggestion_reason }})</small>
-                            {% endif %}
-                        </div>
-                        <span class="file-status">({{ file.status }})</span>
-                    </li>
-                    {% endfor %}
-                </ul>
-                <div style="margin-top: 20px; text-align: center;">
-                    <input type="submit" value="選択したファイルの.gitignoreルールとコマンドを生成">
-                </div>
-            </form>
+            <h2>ファイルを選択して役割を分析:</h2>
+            <ul>
+                {% for file in files %}
+                <li>
+                    <div class="file-info">
+                        <a href="{{ url_for('analyze_file_role', repo_url=repo_url, commit_sha=commit_sha, file_path=file.filename, branch_name=branch_name, pat=pat) }}">{{ file.filename }}</a>
+                    </div>
+                    <span class="file-status">({{ file.status }})</span>
+                </li>
+                {% endfor %}
+            </ul>
         </div>
         {% elif not error %}
-        <p style="text-align:center; margin-top:20px;">このコミットにはファイルが見つからないか、コミットの構造が通常と異なります。</p>
+        <p style="text-align:center; margin-top:20px;">このコミットにはファイルが見つからないか、ファイルのリストを取得できませんでした。</p>
         {% endif %}
     </div>
 </body>
