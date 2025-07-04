@@ -1,3 +1,4 @@
 Flask>=2.0
 requests>=2.25
 google-generativeai>=0.3 # For Gemini API
+python-dotenv>=0.19 # For loading .env files

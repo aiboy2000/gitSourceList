@@ -1,18 +1,22 @@
 from flask import Flask, render_template, request
 import requests
 import re # For regex matching of file patterns
+import os # For API Key and other environment variables
+from dotenv import load_dotenv # For loading .env file
 
 app = Flask(__name__)
 
-import os # For API Key
+load_dotenv() # Load variables from .env file into environment
+
 import google.generativeai as genai # For Gemini API
-# Placeholder for Gemini API Key - User should set this as an environment variable
-# For example: os.environ['GEMINI_API_KEY'] = "YOUR_API_KEY"
-# It's recommended to load this from environment variables for security.
+
+# Now, os.getenv will be able to pick up GEMINI_API_KEY if it's in the .env file or already in the environment
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
+else:
+    print("Warning: GEMINI_API_KEY not found. AI analysis will be disabled.")
 
 # We will remove UNNECESSARY_FILE_PATTERNS and suggest_files_to_ignore
 
