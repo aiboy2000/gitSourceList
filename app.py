@@ -232,33 +232,40 @@ def select_commit():
         if pat:
             headers['Authorization'] = f'token {pat}'
 
-        response = requests.get(api_url, headers=headers)
+        response = requests.get(api_url, headers=headers) # Get basic commit data first
         response.raise_for_status()
         commit_data = response.json()
 
-        # Removed suggestion logic. Now simply list files.
-        if 'files' in commit_data:
-            for file_info in commit_data['files']:
-                files.append({
-                    'filename': file_info['filename'],
-                    'status': file_info['status']
-                })
-        # Fallback for commits without explicit 'files' list (e.g., initial commit, merge commits sometimes)
-        # This part tries to list all files from the commit's tree if the detailed 'files' array isn't present.
-        elif 'commit' in commit_data and 'tree' in commit_data['commit'] and not files :
+        if 'commit' in commit_data and 'tree' in commit_data['commit']:
             tree_sha = commit_data['commit']['tree']['sha']
             tree_api_url = f"https://api.github.com/repos/{user}/{repo}/git/trees/{tree_sha}?recursive=1"
+
+            print(f"Fetching full tree: {tree_api_url}") # For debugging
             tree_response = requests.get(tree_api_url, headers=headers)
             tree_response.raise_for_status()
             tree_data = tree_response.json()
 
             if 'tree' in tree_data:
                 for item in tree_data['tree']:
-                    if item['type'] == 'blob': # Only include files, not directories
+                    if item['type'] == 'blob':  # Ensure it's a file, not a directory or submodule
                         files.append({
                             'filename': item['path'],
-                            'status': '不明', # Status is not available from tree view like this
+                            'status': 'tree' # Indicate it's from the full tree listing
+                                             # Actual status (added, modified) isn't available from tree directly
+                                             # but this distinguishes from the old 'files' array if we ever combined.
                         })
+            else:
+                error = "リポジトリツリーの取得に成功しましたが、ツリーデータが空です。"
+
+            if not files and not error: # If tree was fetched but no files found (e.g. empty repo at commit)
+                error = "このコミットにはファイルが見つかりませんでした (ツリー表示)。"
+
+        else:
+            error = "コミットデータからツリー情報を取得できませんでした。"
+            # Fallback or alternative: try to use commit_data['files'] if primary method fails?
+            # For now, strict full tree. If 'files' (changed files) is desired, it's a different logic path.
+            # The goal here is to list ALL files at that commit state.
+
     except ValueError as ve:
         error = str(ve)
     except requests.exceptions.HTTPError as e:
@@ -412,11 +419,17 @@ def batch_analyze_files():
         parts = repo_url.strip('/').split('/')
         user, repo = parts[-2], parts[-1]
 
-        for file_path in selected_files_paths:
+        FILES_PER_BATCH = 1  # Number of files to include in each consolidated AI call
+                             # TODO: Increase to >1 once robust AI response parsing for batches is implemented.
+        files_to_process_in_current_batch = [] # List of dicts: {'file_path': fp, 'content': fc}
+
+        # Iterate through all selected files to prepare batches
+        for file_idx, file_path in enumerate(selected_files_paths):
             file_content_text = None
             analysis_text = "分析できませんでした。" # Default if analysis fails for a file
+            cached_this_file = False
 
-            # Step 4: Check if already analyzed
+            # Step 4: Check if already analyzed (Cache Check)
             existing_analysis = db_session.query(AnalyzedFile).filter_by(
                 repo_url=repo_url,
                 commit_sha=commit_sha,
@@ -441,68 +454,149 @@ def batch_analyze_files():
                 })
                 all_initial_analyses_texts.append(analysis_text) # Add raw text to list for synthesis
                 print(f"Cache hit for {file_path} in commit {commit_sha}")
-                continue # Skip fetching and re-analyzing
+                cached_this_file = True
+                # No continue here, let it fall through to batch processing logic below if it's the last file of a batch
+                # but the actual processing of this cached file will be skipped.
 
-            try:
-                # Fetch file content
-                api_url = f"https://api.github.com/repos/{user}/{repo}/contents/{file_path}?ref={commit_sha}"
-                headers = {'Accept': 'application/vnd.github.v3+json'}
-                if pat:
-                    headers['Authorization'] = f'token {pat}'
+            if not cached_this_file:
+                try:
+                    # Fetch file content
+                    api_url = f"https://api.github.com/repos/{user}/{repo}/contents/{file_path}?ref={commit_sha}"
+                    headers = {'Accept': 'application/vnd.github.v3+json'}
+                    if pat:
+                        headers['Authorization'] = f'token {pat}'
 
-                response = requests.get(api_url, headers=headers)
-                response.raise_for_status()
-                file_data = response.json()
+                    response = requests.get(api_url, headers=headers)
+                    response.raise_for_status()
+                    file_data = response.json()
 
-                if file_data.get('type') == 'file' and 'content' in file_data:
-                    file_content_encoded = file_data['content']
-                    file_content_bytes = base64.b64decode(file_content_encoded)
-                    try:
-                        file_content_text = file_content_bytes.decode('utf-8')
-                    except UnicodeDecodeError:
-                        file_content_text = file_content_bytes.decode('latin-1', errors='replace')
+                    if file_data.get('type') == 'file' and 'content' in file_data:
+                        file_content_encoded = file_data['content']
+                        file_content_bytes = base64.b64decode(file_content_encoded)
+                        try:
+                            file_content_text = file_content_bytes.decode('utf-8')
+                        except UnicodeDecodeError:
+                            file_content_text = file_content_bytes.decode('latin-1', errors='replace')
 
-                    # First-pass AI analysis
-                    if file_content_text and GEMINI_API_KEY:
-                        model_name_from_env = os.getenv("GEMINI_MODEL_NAME", "gemini-pro")
-                        model = genai.GenerativeModel(model_name_from_env)
-                        prompt = (
-                            f"以下のファイル内容を分析し、このファイルがプロジェクト全体の中でどのような機能的役割を果たしているかを簡潔に説明してください。\n\n"
-                            f"ファイルパス: {file_path}\n\n"
-                            f"ファイル内容:\n"
-                            f"```\n{file_content_text[:10000]}\n```\n\n"
-                            f"このファイルの主な目的と、プロジェクトの他の部分とどのように連携する可能性があるかについて、1～3文でまとめてください。"
+                        files_to_process_in_current_batch.append({
+                            'file_path': file_path,
+                            'content': file_content_text,
+                            'original_idx_in_template_data': len(analyzed_data_for_template) # To map results back
+                        })
+                        # Add a placeholder to analyzed_data_for_template for this file, to be updated after batch AI call
+                        analyzed_data_for_template.append({'file_path': file_path, 'analysis': "処理中...", 'content': file_content_text, 'status': 'Processing'})
+
+                    else: # Not a file or no content
+                        analysis_text = f"'{file_path}' はファイルではないか、コンテンツを取得できませんでした。"
+                        analyzed_data_for_template.append({'file_path': file_path, 'analysis': analysis_text, 'content': None, 'status': 'Error', 'error_detail': analysis_text})
+                        # Does not go into all_initial_analyses_texts if error
+
+                except requests.exceptions.HTTPError as e_file:
+                    error_detail = f"ファイル '{file_path}' の取得エラー: {e_file.response.status_code} - {e_file}"
+                    analyzed_data_for_template.append({'file_path': file_path, 'analysis': "取得エラー", 'content': None, 'status': 'Error', 'error_detail': error_detail})
+                except Exception as e_general_file:
+                    error_detail = f"ファイル '{file_path}' のコンテンツ取得中に予期せぬエラー: {e_general_file}"
+                    analyzed_data_for_template.append({'file_path': file_path, 'analysis': "取得中エラー", 'content': None, 'status': 'Error', 'error_detail': error_detail})
+
+            # Process the batch if it's full or if it's the last file overall
+            if files_to_process_in_current_batch and \
+               (len(files_to_process_in_current_batch) == FILES_PER_BATCH or file_idx == len(selected_files_paths) - 1):
+
+                if not GEMINI_API_KEY:
+                    for file_in_batch in files_to_process_in_current_batch:
+                        # Find the placeholder in analyzed_data_for_template and update it
+                        placeholder_idx = file_in_batch['original_idx_in_template_data']
+                        analyzed_data_for_template[placeholder_idx]['analysis'] = "GEMINI_API_KEYが設定されていないため、AI分析は実行できませんでした。"
+                        analyzed_data_for_template[placeholder_idx]['status'] = "Skipped"
+                        # No DB storage for skipped files due to no API KEY
+                    files_to_process_in_current_batch = [] # Clear batch
+                    continue # Next file in selected_files_paths
+
+                # Construct consolidated prompt for the current batch
+                batch_prompt = "以下の複数のファイルについて、それぞれの機能的な役割を簡潔に説明してください。各ファイルの説明は明確に区切ってください。\n\n"
+                for i, file_data_in_batch in enumerate(files_to_process_in_current_batch):
+                    # Truncate individual file content for the prompt
+                    content_snippet = file_data_in_batch['content'][:10000] if file_data_in_batch['content'] else ""
+                    batch_prompt += f"--- ファイル {i+1} ---\n"
+                    batch_prompt += f"ファイルパス: {file_data_in_batch['file_path']}\n"
+                    batch_prompt += f"ファイル内容:\n```\n{content_snippet}\n```\n\n"
+                batch_prompt += "各ファイルの役割分析:\n" # Ask AI to provide analyses here
+
+                try:
+                    print(f"Processing batch of {len(files_to_process_in_current_batch)} files with AI.")
+                    model_name_from_env = os.getenv("GEMINI_MODEL_NAME", "gemini-pro")
+                    model = genai.GenerativeModel(model_name_from_env)
+
+                    # Consider overall prompt length limits here too if FILES_PER_BATCH * 10000 is too large
+                    ai_batch_response_text = model.generate_content(batch_prompt).text
+
+                    # --- Parse the AI's consolidated response ---
+                    # This parsing needs to be robust. For now, a simple split based on a delimiter.
+                    # Expecting AI to output something like:
+                    # "ファイルパス: path/to/file1.py\n役割分析: [summary1]\n\nファイルパス: path/to/file2.py\n役割分析: [summary2]"
+                    # Or, more simply, just a sequence of summaries that we map back by order.
+                    # Let's try a simpler parsing: Assume AI gives summaries in order, separated by a clear delimiter like "--- 次のファイル ---" or just "\n\n---\n\n"
+                    # For now, let's assume a very simple parsing: AI returns summaries separated by "--- FILE BREAK ---"
+                    # The prompt should instruct the AI to use such a delimiter.
+                    # Modifying prompt slightly:
+                    # batch_prompt += "各ファイルの役割分析 (各分析結果を '--- FILE BREAK ---' で区切ってください):\n" (This should be added above)
+                    # For now, this part is highly dependent on reliable AI output formatting.
+                    # A more robust method would involve asking the AI to return JSON.
+
+                    # Placeholder for actual parsing logic for AI_BATCH_RESPONSE_TEXT
+                    # This is a critical and potentially complex part.
+                    # For now, let's assume a simple scenario: AI returns summaries in order, one per "paragraph" or separated by "\n\n"
+                    # and we map them back to files_to_process_in_current_batch by order.
+
+                    # This is a placeholder for parsing. A real implementation needs robust parsing.
+                    # For simplicity in this step, let's assume one summary per file, and we'll distribute them.
+                    # This is a MAJOR simplification and likely point of failure without careful prompt engineering and parsing.
+                    parsed_summaries = [f"仮の解析結果 {i+1} for {f['file_path']}" for i, f in enumerate(files_to_process_in_current_batch)]
+                    if ai_batch_response_text:
+                        # Attempt to split by a hypothetical delimiter or make assumptions.
+                        # This needs to align with how the AI is prompted to format its output.
+                        # For now, if only one file in batch, it's easy. If multiple, this is hard.
+                        # Let's assume for now, if len(files_to_process_in_current_batch) == 1, ai_batch_response_text is the summary.
+                        # This is a stop-gap. True batch parsing is complex.
+                        if len(files_to_process_in_current_batch) == 1:
+                             parsed_summaries = [ai_batch_response_text]
+                        else:
+                            # TODO: Implement robust parsing for multiple files in a single AI response.
+                            # For now, assign a generic message if parsing is not implemented for >1 file.
+                            parsed_summaries = [f"バッチ応答の解析ロジックが必要です for {f['file_path']}" for f in files_to_process_in_current_batch]
+
+
+                    for i, file_in_batch in enumerate(files_to_process_in_current_batch):
+                        placeholder_idx = file_in_batch['original_idx_in_template_data']
+                        current_file_path = file_in_batch['file_path']
+                        current_file_content = file_in_batch['content']
+
+                        # This summary mapping is naive if multiple files are in one response without good delimiters.
+                        individual_summary = parsed_summaries[i] if i < len(parsed_summaries) else "解析結果のマッピングに失敗しました。"
+
+                        analyzed_data_for_template[placeholder_idx]['analysis'] = individual_summary
+                        analyzed_data_for_template[placeholder_idx]['status'] = "Analyzed"
+                        all_initial_analyses_texts.append(individual_summary)
+
+                        # Store in DB
+                        new_analysis = AnalyzedFile(
+                            repo_url=repo_url, commit_sha=commit_sha, file_path=current_file_path,
+                            file_content=current_file_content, initial_analysis_text=individual_summary
                         )
-                        ai_response = model.generate_content(prompt)
-                        analysis_text = ai_response.text # Raw text from AI
-                    elif not GEMINI_API_KEY:
-                        analysis_text = "GEMINI_API_KEYが設定されていないため、AI分析は実行できませんでした。" # This is a single line
-                else:
-                    analysis_text = f"'{file_path}' はファイルではないか、コンテンツを取得できませんでした。" # Single line
+                        db_session.add(new_analysis)
+                    db_session.commit() # Commit after processing a batch
 
-                # Store in DB (raw analysis_text)
-                new_analysis = AnalyzedFile(
-                    repo_url=repo_url,
-                    commit_sha=commit_sha,
-                    file_path=file_path,
-                    file_content=file_content_text,
-                    initial_analysis_text=analysis_text
-                )
-                db_session.add(new_analysis)
-                db_session.commit() # Commit per file or at the end of batch? Per file for now.
+                except Exception as e_batch_ai:
+                    print(f"Error during batch AI call: {e_batch_ai}")
+                    for file_in_batch in files_to_process_in_current_batch:
+                        placeholder_idx = file_in_batch['original_idx_in_template_data']
+                        analyzed_data_for_template[placeholder_idx]['analysis'] = "バッチAI分析中にエラーが発生しました。"
+                        analyzed_data_for_template[placeholder_idx]['status'] = "Error"
 
-                analyzed_data_for_template.append({'file_path': file_path, 'analysis': analysis_text, 'content': file_content_text, 'status': 'Analyzed'})
-                all_initial_analyses_texts.append(analysis_text)
+                files_to_process_in_current_batch = [] # Clear the batch
 
-            except requests.exceptions.HTTPError as e_file:
-                error_detail = f"ファイル '{file_path}' の取得/分析エラー: {e_file.response.status_code} - {e_file}"
-                analyzed_data_for_template.append({'file_path': file_path, 'analysis': analysis_text, 'content': None, 'status': 'Error', 'error_detail': error_detail})
-            except Exception as e_general_file:
-                error_detail = f"ファイル '{file_path}' の処理中に予期せぬエラー: {e_general_file}"
-                analyzed_data_for_template.append({'file_path': file_path, 'analysis': analysis_text, 'content': None, 'status': 'Error', 'error_detail': error_detail})
-
-        # --- Placeholder for Phase 3: Second-Pass AI Feature Synthesis (Step 5) ---
-        feature_synthesis_result_text = "特徴の統合分析は後ほど実装されます。"
+        # --- Second-Pass AI Feature Synthesis (Step 5) ---
+        feature_synthesis_result_text_for_template = "特徴の統合分析は後ほど実装されます。" # Renamed for clarity
         if all_initial_analyses_texts and GEMINI_API_KEY:
             # This is where Step 5 would go.
             # Construct prompt with all_initial_analyses_texts
