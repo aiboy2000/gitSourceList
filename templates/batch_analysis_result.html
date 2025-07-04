@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>バッチ分析結果 - GitHub AIアナライザー</title>
+    <style>
+        body { font-family: "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", "Hiragino Sans", Meiryo, sans-serif; margin: 20px; background-color: #f8f9fa; color: #212529; line-height: 1.6; }
+        .container { background-color: #ffffff; padding: 25px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-width: 900px; margin: 30px auto; }
+        h1, h2, h3 { color: #343a40; margin-bottom: 1em; }
+        h1 { font-size: 2em; text-align: center; }
+        h2 { font-size: 1.5em; border-bottom: 1px solid #dee2e6; padding-bottom: 0.5em; margin-top: 1.8em;}
+        h3 { font-size: 1.2em; margin-top: 1.5em; color: #495057;}
+        .error { color: #dc3545; background-color: #f8d7da; border: 1px solid #f5c6cb; padding: 10px; border-radius: 6px; margin-bottom: 20px; text-align: center; }
+        .info-box { padding: 15px; border: 1px solid #bee5eb; border-radius: 8px; margin-bottom:20px; background-color: #d1ecf1; color: #0c5460;}
+        .info-box p { margin: 0.5em 0; }
+        .analysis-section { margin-top: 20px; padding: 20px; background-color: #f8f9fa; border-radius: 8px; border: 1px solid #e9ecef;}
+        .analysis-section h2, .analysis-section h3 { margin-top: 0; }
+        .file-analysis-item { margin-bottom: 20px; padding-bottom: 15px; border-bottom: 1px dashed #ced4da; }
+        .file-analysis-item:last-child { border-bottom: none; }
+        pre { background-color: #e9ecef; color: #212529; padding: 15px; border-radius: 6px; white-space: pre-wrap; word-wrap: break-word; border: 1px solid #ced4da; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; font-size: 0.95em; line-height: 1.5; max-height: 300px; overflow-y: auto; }
+        .back-link { margin-bottom: 25px; display: inline-block; color: #007bff; text-decoration: none; font-weight: bold; }
+        .back-link:hover { text-decoration: underline; }
+        .status-cached { color: #28a745; font-weight: bold; }
+        .status-analyzed { color: #007bff; }
+        .status-error { color: #dc3545; font-weight: bold; }
+        .notice { color: #856404; background-color: #fff3cd; border-color: #ffeeba; padding: .75rem 1.25rem; margin-bottom: 1rem; border: 1px solid transparent; border-radius: .25rem;}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="{{ url_for('select_commit', repo_url=repo_url, commit_sha=commit_sha, branch_name=branch_name, pat=pat) }}" class="back-link">&laquo; コミットのファイル一覧に戻る</a>
+
+        <h1>バッチ分析結果</h1>
+
+        {% if error %}
+            <p class="error">{{ error }}</p>
+        {% endif %}
+
+        <div class="info-box">
+            <p><strong>リポジトリ:</strong> <a href="{{ repo_url }}" target="_blank">{{ repo_url }}</a></p>
+            {% if branch_name %}<p><strong>ブランチ:</strong> {{ branch_name }}</p>{% endif %}
+            <p><strong>コミット:</strong> {{ commit_sha[:10] }}...</p>
+        </div>
+
+        {% if not GEMINI_API_KEY and not error %}
+             <p class="notice">警告: GEMINI_API_KEYが設定されていません。AIによる分析は実行されませんでした。</p>
+        {% endif %}
+
+        <div class="analysis-section">
+            <h2>統合的な機能分析 (AIによる全体サマリー):</h2>
+            {% if feature_synthesis %}
+                <p>{{ feature_synthesis | safe }}</p> {# Assuming feature_synthesis is pre-formatted with <br> if needed #}
+            {% else %}
+                <p>利用可能な統合分析結果はありません。</p>
+            {% endif %}
+        </div>
+
+        <div class="analysis-section">
+            <h2>個別のファイル分析結果:</h2>
+            {% if analyzed_files_data %}
+                {% for file_data in analyzed_files_data %}
+                <div class="file-analysis-item">
+                    <h3>ファイル: {{ file_data.file_path }} <span class="status-{{ file_data.status | lower }}">({{ file_data.status }})</span></h3>
+                    {% if file_data.error_detail %}
+                        <p class="error">エラー詳細: {{ file_data.error_detail }}</p>
+                    {% endif %}
+                    <p><strong>役割分析:</strong></p>
+                    <p>{{ file_data.analysis | safe }}</p> {# Assuming analysis text is pre-formatted with <br> if needed, or store raw and use nl2br custom filter #}
+
+                    {% if file_data.content %}
+                        <details>
+                            <summary>ファイル内容を表示/非表示 (最初の10000文字)</summary>
+                            <pre><code>{{ file_data.content[:10000] }}</code></pre>
+                        </details>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            {% else %}
+                <p>分析されたファイルはありません。</p>
+            {% endif %}
+        </div>
+
+    </div>
+</body>
+</html>

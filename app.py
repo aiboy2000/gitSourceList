@@ -8,6 +8,8 @@ app = Flask(__name__)
 
 load_dotenv() # Load variables from .env file into environment
 
+from database import init_db, SessionLocal, AnalyzedFile, FeatureSynthesis # Import database components and models
+
 import google.generativeai as genai # For Gemini API
 
 # Now, os.getenv will be able to pick up GEMINI_API_KEY if it's in the .env file or already in the environment
@@ -386,5 +388,200 @@ def analyze_file_role():
                            branch_name=branch_name,
                            pat=pat)
 
+
+@app.route('/batch_analyze_files', methods=['POST'])
+def batch_analyze_files():
+    repo_url = request.form.get('repo_url')
+    commit_sha = request.form.get('commit_sha')
+    branch_name = request.form.get('branch_name') # For context, might not be strictly needed for file fetching if commit_sha is absolute
+    pat = request.form.get('pat')
+    selected_files_paths = request.form.getlist('selected_files')
+
+    if not all([repo_url, commit_sha, selected_files_paths]):
+        error = "リポジトリURL、コミットSHA、および少なくとも1つのファイルを選択する必要があります。"
+        # How to render back to commit_files.html with an error?
+        # We might need to fetch the full file list again for that commit to re-render the page.
+        # For now, let's return a simple error page or redirect.
+        return render_template('analysis_result.html', error=error, repo_url=repo_url, commit_sha=commit_sha, branch_name=branch_name, pat=pat)
+
+    analyzed_data_for_template = []
+    all_initial_analyses_texts = [] # To collect texts for second pass AI
+    db_session = SessionLocal()
+
+    try:
+        parts = repo_url.strip('/').split('/')
+        user, repo = parts[-2], parts[-1]
+
+        for file_path in selected_files_paths:
+            file_content_text = None
+            analysis_text = "分析できませんでした。" # Default if analysis fails for a file
+
+            # Step 4: Check if already analyzed
+            existing_analysis = db_session.query(AnalyzedFile).filter_by(
+                repo_url=repo_url,
+                commit_sha=commit_sha,
+                file_path=file_path
+            ).first()
+
+            if existing_analysis and existing_analysis.initial_analysis_text:
+                file_content_text = existing_analysis.file_content
+                analysis_text = existing_analysis.initial_analysis_text
+                # Ensure that even cached results are correctly formatted with <br> if needed by template
+                # However, the current design applies .replace('\n', '<br>') only on AI model output.
+                # For consistency, we might need to store raw text from AI and apply <br> only at display time,
+                # or ensure stored text already has <br>. For now, assume stored text is ready for display or raw.
+                # Let's assume initial_analysis_text is stored raw and needs formatting if displayed directly.
+                # The batch_analysis_result.html will need to handle this if it shows individual analyses.
+
+                analyzed_data_for_template.append({
+                    'file_path': file_path,
+                    'analysis': analysis_text, # This is the raw text from DB
+                    'content': file_content_text,
+                    'status': '取得済み (キャッシュ)' # "Retrieved (Cached)"
+                })
+                all_initial_analyses_texts.append(analysis_text) # Add raw text to list for synthesis
+                print(f"Cache hit for {file_path} in commit {commit_sha}")
+                continue # Skip fetching and re-analyzing
+
+            try:
+                # Fetch file content
+                api_url = f"https://api.github.com/repos/{user}/{repo}/contents/{file_path}?ref={commit_sha}"
+                headers = {'Accept': 'application/vnd.github.v3+json'}
+                if pat:
+                    headers['Authorization'] = f'token {pat}'
+
+                response = requests.get(api_url, headers=headers)
+                response.raise_for_status()
+                file_data = response.json()
+
+                if file_data.get('type') == 'file' and 'content' in file_data:
+                    file_content_encoded = file_data['content']
+                    file_content_bytes = base64.b64decode(file_content_encoded)
+                    try:
+                        file_content_text = file_content_bytes.decode('utf-8')
+                    except UnicodeDecodeError:
+                        file_content_text = file_content_bytes.decode('latin-1', errors='replace')
+
+                    # First-pass AI analysis
+                    if file_content_text and GEMINI_API_KEY:
+                        model_name_from_env = os.getenv("GEMINI_MODEL_NAME", "gemini-pro")
+                        model = genai.GenerativeModel(model_name_from_env)
+                        prompt = (
+                            f"以下のファイル内容を分析し、このファイルがプロジェクト全体の中でどのような機能的役割を果たしているかを簡潔に説明してください。\n\n"
+                            f"ファイルパス: {file_path}\n\n"
+                            f"ファイル内容:\n"
+                            f"```\n{file_content_text[:10000]}\n```\n\n"
+                            f"このファイルの主な目的と、プロジェクトの他の部分とどのように連携する可能性があるかについて、1～3文でまとめてください。"
+                        )
+                        ai_response = model.generate_content(prompt)
+                        analysis_text = ai_response.text # Raw text from AI
+                    elif not GEMINI_API_KEY:
+                        analysis_text = "GEMINI_API_KEYが設定されていないため、AI分析は実行できませんでした。" # This is a single line
+                else:
+                    analysis_text = f"'{file_path}' はファイルではないか、コンテンツを取得できませんでした。" # Single line
+
+                # Store in DB (raw analysis_text)
+                new_analysis = AnalyzedFile(
+                    repo_url=repo_url,
+                    commit_sha=commit_sha,
+                    file_path=file_path,
+                    file_content=file_content_text,
+                    initial_analysis_text=analysis_text
+                )
+                db_session.add(new_analysis)
+                db_session.commit() # Commit per file or at the end of batch? Per file for now.
+
+                analyzed_data_for_template.append({'file_path': file_path, 'analysis': analysis_text, 'content': file_content_text, 'status': 'Analyzed'})
+                all_initial_analyses_texts.append(analysis_text)
+
+            except requests.exceptions.HTTPError as e_file:
+                error_detail = f"ファイル '{file_path}' の取得/分析エラー: {e_file.response.status_code} - {e_file}"
+                analyzed_data_for_template.append({'file_path': file_path, 'analysis': analysis_text, 'content': None, 'status': 'Error', 'error_detail': error_detail})
+            except Exception as e_general_file:
+                error_detail = f"ファイル '{file_path}' の処理中に予期せぬエラー: {e_general_file}"
+                analyzed_data_for_template.append({'file_path': file_path, 'analysis': analysis_text, 'content': None, 'status': 'Error', 'error_detail': error_detail})
+
+        # --- Placeholder for Phase 3: Second-Pass AI Feature Synthesis (Step 5) ---
+        feature_synthesis_result_text = "特徴の統合分析は後ほど実装されます。"
+        if all_initial_analyses_texts and GEMINI_API_KEY:
+            # This is where Step 5 would go.
+            # Construct prompt with all_initial_analyses_texts
+            # Call Gemini API
+            # Store result in FeatureSynthesis table
+            if all_initial_analyses_texts and GEMINI_API_KEY:
+                try:
+                    synthesis_prompt = (
+                        "以下の個別のファイル役割分析に基づいて、これらのファイル群がターゲットプロジェクトのどのような主要な機能や全体的な役割に貢献しているかを統合的に説明してください。\n\n"
+                        "個別のファイル分析:\n"
+                        "--------------------\n"
+                    )
+                    for i, text in enumerate(all_initial_analyses_texts):
+                        # We might need to be careful about prompt length.
+                        # For now, just concatenating.
+                        synthesis_prompt += f"ファイルセット{i+1}の分析:\n{text}\n\n"
+
+                    synthesis_prompt += "--------------------\n"
+                    synthesis_prompt += "統合的な機能説明:\n"
+
+                    model_name_from_env = os.getenv("GEMINI_MODEL_NAME", "gemini-pro") # Use configured model
+                    synthesis_model = genai.GenerativeModel(model_name_from_env)
+
+                    # Limit prompt length if necessary, though Gemini Pro has a large context window
+                    # For extremely large number of files, this might need chunking or summarization of summaries.
+                    MAX_SYNTHESIS_PROMPT_CHARS = 30000 # Example limit
+                    ai_synthesis_response = synthesis_model.generate_content(synthesis_prompt[:MAX_SYNTHESIS_PROMPT_CHARS])
+                    raw_synthesis_text = ai_synthesis_response.text
+
+                    # Store the raw synthesis result
+                    new_synthesis = FeatureSynthesis(
+                        commit_sha=commit_sha, # Or a more specific batch_id if implemented
+                        synthesis_text=raw_synthesis_text
+                    )
+                    db_session.add(new_synthesis)
+                    db_session.commit()
+                    print(f"Feature synthesis stored for commit {commit_sha}")
+                    feature_synthesis_result_text_for_template = raw_synthesis_text.replace('\n', '<br>')
+
+                except Exception as e_synth:
+                    print(f"Error during feature synthesis: {e_synth}")
+                    feature_synthesis_result_text_for_template = f"特徴の統合分析中にエラーが発生しました: {e_synth}".replace('\n', '<br>')
+            elif not GEMINI_API_KEY:
+                feature_synthesis_result_text_for_template = "GEMINI_API_KEYが設定されていないため、特徴の統合分析は実行できませんでした。" # Already single line
+            else: # No initial analyses to synthesize
+                feature_synthesis_result_text_for_template = "分析対象のファイルがないため、特徴の統合分析は行われませんでした。" # Already single line
+
+            # Prepare individual analysis texts for template (with <br>)
+            # The 'analysis' field in analyzed_data_for_template currently holds raw text from DB or AI
+            # We need to format it for the template.
+            formatted_analyzed_files_data = []
+            for ad in analyzed_data_for_template:
+                # Ensure 'analysis' key exists and is a string before replacing
+                analysis_content = ad.get('analysis', '')
+                if not isinstance(analysis_content, str):
+                    analysis_content = str(analysis_content) # Convert to string if not already
+
+                formatted_ad = ad.copy() # Avoid modifying original dict in list
+                formatted_ad['analysis'] = analysis_content.replace('\n', '<br>')
+                formatted_analyzed_files_data.append(formatted_ad)
+
+
+        return render_template('batch_analysis_result.html', # New template needed
+                               repo_url=repo_url,
+                               commit_sha=commit_sha,
+                               branch_name=branch_name,
+                               analyzed_files_data=formatted_analyzed_files_data, # Pass formatted data
+                               feature_synthesis=feature_synthesis_result_text_for_template, # Pass formatted data
+                               pat=pat)
+
+    except Exception as e_batch:
+        # Broader error handling for the batch process itself
+        db_session.rollback() # Rollback if batch fails mid-way and not committing per file
+        error = f"バッチ分析処理中にエラーが発生しました: {e_batch}"
+        return render_template('analysis_result.html', error=error, repo_url=repo_url, commit_sha=commit_sha, branch_name=branch_name, pat=pat)
+    finally:
+        db_session.close()
+
+
 if __name__ == '__main__':
+    init_db() # Initialize the database and create tables if they don't exist
     app.run(debug=True)

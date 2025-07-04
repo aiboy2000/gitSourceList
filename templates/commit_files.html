@@ -47,17 +47,53 @@
 
         {% if files %}
         <div class="results-section">
-            <h2>ファイルを選択して役割を分析:</h2>
-            <ul>
-                {% for file in files %}
-                <li>
-                    <div class="file-info">
-                        <a href="{{ url_for('analyze_file_role', repo_url=repo_url, commit_sha=commit_sha, file_path=file.filename, branch_name=branch_name, pat=pat) }}">{{ file.filename }}</a>
-                    </div>
-                    <span class="file-status">({{ file.status }})</span>
-                </li>
-                {% endfor %}
-            </ul>
+            <h2>分析するファイルを選択 (デフォルト全選択):</h2>
+            <form method="POST" action="{{ url_for('batch_analyze_files') }}"> {# New route to be created #}
+                <input type="hidden" name="repo_url" value="{{ repo_url }}">
+                <input type="hidden" name="commit_sha" value="{{ commit_sha }}">
+                <input type="hidden" name="branch_name" value="{{ branch_name }}">
+                <input type="hidden" name="pat" value="{{ pat }}">
+
+                <div style="margin-bottom: 10px;">
+                    <input type="checkbox" id="select_all_files" checked>
+                    <label for="select_all_files">全て選択/解除</label>
+                </div>
+                <ul>
+                    {% for file in files %}
+                    <li>
+                        <div class="file-info">
+                            <input type="checkbox" name="selected_files" value="{{ file.filename }}" id="file_{{ loop.index }}" class="file-checkbox" checked>
+                            <label for="file_{{ loop.index }}">{{ file.filename }}</label>
+                        </div>
+                        <span class="file-status">({{ file.status }})</span>
+                    </li>
+                    {% endfor %}
+                </ul>
+                <div style="margin-top: 20px; text-align: center;">
+                    <input type="submit" value="選択したファイルの役割と関連機能を分析">
+                </div>
+            </form>
+            <script>
+                document.getElementById('select_all_files').addEventListener('change', function(event) {
+                    var checkboxes = document.querySelectorAll('.file-checkbox');
+                    checkboxes.forEach(function(checkbox) {
+                        checkbox.checked = event.target.checked;
+                    });
+                });
+                // Ensure individual checkboxes can affect the "select all" state (optional, more complex UX)
+                var fileCheckboxes = document.querySelectorAll('.file-checkbox');
+                fileCheckboxes.forEach(function(cb) {
+                    cb.addEventListener('change', function() {
+                        var allChecked = true;
+                        fileCheckboxes.forEach(function(innerCb) {
+                            if (!innerCb.checked) {
+                                allChecked = false;
+                            }
+                        });
+                        document.getElementById('select_all_files').checked = allChecked;
+                    });
+                });
+            </script>
         </div>
         {% elif not error %}
         <p style="text-align:center; margin-top:20px;">このコミットにはファイルが見つからないか、ファイルのリストを取得できませんでした。</p>
