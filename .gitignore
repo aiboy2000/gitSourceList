@@ -1,2 +1,162 @@
-我想做一个应用，可以把github里的项目的提交（commit）里的无用的文件去掉（比如build后产生的log和二进制文件）。 
-步骤： 1.指定github的项目地址URL 2.列出commit一览 3.选定一个commit 4.扫描其中的文件一览 5.指出不需要的文件 6.将这些文件的后缀加入ignore文件 7.给出执行清理这些文件的命令
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+# Usually these files are written by a CI script in a specific folder later made into an artifact.
+# *.manifest
+# *.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# pipenv
+# According to Python project recommendations, Pipfile.lock may be versioned.
+# Pipfile.lock
+
+# poetry
+# poetry.lock
+
+# pdm
+# pdm.lock
+# .pdm.toml
+
+# PEP 582; used by e.g. github.com/David-OConnor/pyflow
+__pypackages__/
+
+# Celery stuff
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.env.*
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static analyzer
+.pytype/
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+*$RECYCLE.BIN/
+
+# Editor Files
+*.swp
+*~
+*.bak
+*.tmp
+
+# IDEs
+.idea/
+.vscode/
+# Note: If you want to share specific non-sensitive VSCode settings,
+# you can un-ignore them like this:
+# !.vscode/settings.json
+# !.vscode/launch.json
+# !.vscode/extensions.json
+
+# Miscellaneous
+*.pid
+*.pid.lock
