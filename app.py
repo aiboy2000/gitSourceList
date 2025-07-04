@@ -346,14 +346,19 @@ def analyze_file_role():
                         f"このファイルの主な目的と、プロジェクトの他の部分とどのように連携する可能性があるかについて、1～3文でまとめてください。"
                     )
                     ai_response = model.generate_content(prompt)
-                    analysis_result = ai_response.text
+                    analysis_result = ai_response.text.replace('\n', '<br>')
                 except Exception as e:
                     error = f"AI分析中にエラーが発生しました: {e}"
-                    analysis_result = "AI分析の実行中にエラーが発生しました。"
+                    analysis_result = "AI分析の実行中にエラーが発生しました。".replace('\n', '<br>') # Also apply here for consistency
             elif not GEMINI_API_KEY:
-                analysis_result = "GEMINI_API_KEYが設定されていないため、AI分析は実行できませんでした。ファイルの内容は取得されました。"
+                analysis_result = "GEMINI_API_KEYが設定されていないため、AI分析は実行できませんでした。ファイルの内容は取得されました。".replace('\n', '<br>')
                 # If no API key, we can still show the file content for manual review if desired
                 # Or simply state analysis cannot be performed.
+
+            # Ensure all paths leading to analysis_result apply the nl2br equivalent
+            if analysis_result == "分析はまだ実行されていません。": # Default initial value
+                 analysis_result = analysis_result.replace('\n', '<br>')
+
 
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 404:

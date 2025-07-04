@@ -45,7 +45,7 @@
         <div class="analysis-section">
             <h2>AIによる機能的役割の分析:</h2>
             {% if analysis_result %}
-                <p>{{ analysis_result | nl2br }}</p>
+                <p>{{ analysis_result | safe }}</p>
             {% else %}
                 <p>利用可能な分析結果はありません。</p>
             {% endif %}
